@@ -3,7 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -58,6 +61,17 @@ func getTransceiver() *smpp.Transceiver {
 	}
 }
 
+func closeTransceiverOnSignal(trans *smpp.Transceiver) {
+	go func() {
+		signalChannel := make(chan os.Signal, 1)
+		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGQUIT)
+		sig := <-signalChannel
+		fmt.Println(sig, "signal caught, exiting.")
+		trans.Close()
+		os.Exit(0)
+	}()
+}
+
 func purgeReceipts() {
 	receiptCount := NewSafeInt(0)
 
@@ -79,6 +93,7 @@ func purgeReceipts() {
 		}
 		fmt.Println("Error connecting:", c.Error())
 	}
+	closeTransceiverOnSignal(transceiver)
 
 	time.Sleep(time.Duration(*wait) * time.Second)
 	fmt.Println("receiptCount:", receiptCount.Val())
@@ -116,6 +131,7 @@ func sendMessages(numMessages int) {
 		}
 		fmt.Println("Error connecting:", c.Error())
 	}
+	closeTransceiverOnSignal(transceiver)
 
 	go func() {
 		for c := range conn {
