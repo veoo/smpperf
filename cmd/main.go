@@ -64,7 +64,7 @@ func getTransceiver() *smpp.Transceiver {
 func closeTransceiverOnSignal(trans *smpp.Transceiver) {
 	go func() {
 		signalChannel := make(chan os.Signal, 1)
-		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGQUIT)
+		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 		sig := <-signalChannel
 		fmt.Println(sig, "signal caught, exiting.")
 		trans.Close()
