@@ -2,14 +2,13 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"golang.org/x/time/rate"
 
 	"github.com/veoo/go-smpp/smpp"
@@ -66,7 +65,7 @@ func closeTransceiverOnSignal(trans *smpp.Transceiver) {
 		signalChannel := make(chan os.Signal, 1)
 		signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 		sig := <-signalChannel
-		fmt.Println(sig, "signal caught, exiting.")
+		log.Println("WARNING:", sig, "signal caught, exiting.")
 		trans.Close()
 		os.Exit(0)
 	}()
@@ -91,12 +90,12 @@ func purgeReceipts() {
 		if c.Error() == nil {
 			break
 		}
-		fmt.Println("Error connecting:", c.Error())
+		log.Println("ERROR: Error connecting:", c.Error())
 	}
 	closeTransceiverOnSignal(transceiver)
 
 	time.Sleep(time.Duration(*wait) * time.Second)
-	fmt.Println("receiptCount:", receiptCount.Val())
+	log.Println("receiptCount:", receiptCount.Val())
 }
 
 func sendMessages(numMessages int) {
@@ -111,11 +110,11 @@ func sendMessages(numMessages int) {
 			// TODO: check here the resp data is correct
 			go successCount.Increment()
 		case pdu.UnbindID:
-			fmt.Println("They are unbinding me :(")
+			log.Println("ERROR: They are unbinding me :(")
 		case pdu.SubmitSMRespID:
 			// Fix your stuff fiorix
 		default:
-			go fmt.Println(p.Header().ID.String(), p.Header().Status.Error())
+			go log.Println(p.Header().ID.String(), p.Header().Status.Error())
 			go unknownRespCount.Increment()
 		}
 	}
@@ -129,14 +128,14 @@ func sendMessages(numMessages int) {
 		if c.Error() == nil {
 			break
 		}
-		fmt.Println("Error connecting:", c.Error())
+		log.Println("ERROR: connection failed:", c.Error())
 	}
 	closeTransceiverOnSignal(transceiver)
 
 	go func() {
 		for c := range conn {
 			if c.Error() != nil {
-				log.Info("SMPP connection status: ", c.Status(), c.Error())
+				log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
 				go connErrorCount.Increment()
 			}
 		}
@@ -165,7 +164,7 @@ func sendMessages(numMessages int) {
 				}
 			}()
 		}
-		fmt.Println("Time elapsed sending:", time.Since(now))
+		log.Println("Time elapsed sending:", time.Since(now))
 	}()
 
 	now := time.Now()
@@ -179,18 +178,22 @@ func sendMessages(numMessages int) {
 		}
 		// Every 10 secs print a progress
 		if i%100 == 0 {
-			fmt.Println("Time since start:", time.Since(now))
-			fmt.Println("successCount:", successCount.Val())
-			fmt.Println("unknownRespCount:", unknownRespCount.Val())
-			fmt.Println("sendErrorCount:", sendErrorCount.Val())
-			fmt.Println("connErrorCount:", connErrorCount.Val())
+			log.Println("Time since start:", time.Since(now))
+			log.Println("successCount:", successCount.Val())
+			log.Println("unknownRespCount:", unknownRespCount.Val())
+			log.Println("sendErrorCount:", sendErrorCount.Val())
+			log.Println("connErrorCount:", connErrorCount.Val())
 		}
 	}
-	fmt.Println("Time elapsed receiving:", time.Since(now))
-	fmt.Println("successCount:", successCount.Val())
-	fmt.Println("unknownRespCount:", unknownRespCount.Val())
-	fmt.Println("sendErrorCount:", sendErrorCount.Val())
-	fmt.Println("connErrorCount:", connErrorCount.Val())
+	if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < numMessages {
+		log.Println("WARNING: Waiting time is over and didn't receive enough responses.")
+	}
+
+	log.Println("Time elapsed receiving:", time.Since(now))
+	log.Println("successCount:", successCount.Val())
+	log.Println("unknownRespCount:", unknownRespCount.Val())
+	log.Println("sendErrorCount:", sendErrorCount.Val())
+	log.Println("connErrorCount:", connErrorCount.Val())
 }
 
 func main() {
