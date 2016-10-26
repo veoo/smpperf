@@ -21,7 +21,7 @@ const (
 
 var numMessages = flag.Int("n", 5000, "number of messages")
 var msgRate = flag.Int("r", 20, "rate of sending messages in msg/s")
-var wait = flag.Int("w", 10, "seconds to wait for message receipts")
+var wait = flag.Int("w", 60, "seconds to wait for message receipts")
 var user = flag.String("u", "user", "user of SMPP server")
 var password = flag.String("p", "", "password of SMPP server")
 var host = flag.String("h", "127.0.0.1:2775", "host of SMPP server")
@@ -83,6 +83,7 @@ func sendMessages(numMessages int) {
 		if c.Error() == nil {
 			break
 		}
+		fmt.Println("Error connecting:", c.Error())
 	}
 
 	go func() {
@@ -101,6 +102,7 @@ func sendMessages(numMessages int) {
 		Register: smpp.FinalDeliveryReceipt,
 	}
 	go func() {
+		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
 		for i := 0; i < numMessages; i += 1 {
@@ -116,14 +118,24 @@ func sendMessages(numMessages int) {
 				}
 			}()
 		}
+		fmt.Println("Time elapsed sending:", time.Since(now))
 	}()
 
+	now := time.Now()
 	for i := 0; i < *wait*10; i += 1 {
 		time.Sleep(100 * time.Millisecond)
 		if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= numMessages {
 			break
 		}
+		// Every minute print a progress
+		if i%100 == 0 {
+			fmt.Println("successCount:", successCount.Val())
+			fmt.Println("unknownRespCount:", unknownRespCount.Val())
+			fmt.Println("sendErrorCount:", sendErrorCount.Val())
+			fmt.Println("connErrorCount:", connErrorCount.Val())
+		}
 	}
+	fmt.Println("Time elapsed receiving:", time.Since(now))
 	fmt.Println("successCount:", successCount.Val())
 	fmt.Println("unknownRespCount:", unknownRespCount.Val())
 	fmt.Println("sendErrorCount:", sendErrorCount.Val())
@@ -135,7 +147,5 @@ func main() {
 	if *numMessages <= 0 {
 		panic("invalid value for number of messages")
 	}
-	now := time.Now()
 	sendMessages(*numMessages)
-	fmt.Println("Time elapsed:", time.Since(now))
 }
