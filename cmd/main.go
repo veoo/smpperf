@@ -25,6 +25,7 @@ var wait = flag.Int("w", 60, "seconds to wait for message receipts")
 var user = flag.String("u", "user", "user of SMPP server")
 var password = flag.String("p", "", "password of SMPP server")
 var host = flag.String("h", "127.0.0.1:2775", "host of SMPP server")
+var purge = flag.Bool("purge", false, "waits to receive any pending receipts")
 
 type SafeInt struct {
 	val int
@@ -45,6 +46,42 @@ func (s *SafeInt) Val() int {
 	s.m.RLock()
 	defer s.m.RUnlock()
 	return s.val
+}
+
+func getTransceiver() *smpp.Transceiver {
+	return &smpp.Transceiver{
+		Addr:        *host,
+		User:        *user,
+		Passwd:      *password,
+		RespTimeout: 10 * time.Second,
+		EnquireLink: 1 * time.Second,
+	}
+}
+
+func purgeReceipts() {
+	receiptCount := NewSafeInt(0)
+
+	transceiverHandler := func(p pdu.Body) {
+		switch p.Header().ID {
+		case pdu.DeliverSMID:
+			go receiptCount.Increment()
+		}
+	}
+
+	transceiver := getTransceiver()
+	transceiver.Handler = transceiverHandler
+
+	conn := transceiver.Bind() // make persistent connection.
+	defer transceiver.Close()
+	for c := range conn {
+		if c.Error() == nil {
+			break
+		}
+		fmt.Println("Error connecting:", c.Error())
+	}
+
+	time.Sleep(time.Duration(*wait) * time.Second)
+	fmt.Println("receiptCount:", receiptCount.Val())
 }
 
 func sendMessages(numMessages int) {
@@ -68,14 +105,8 @@ func sendMessages(numMessages int) {
 		}
 	}
 
-	transceiver := &smpp.Transceiver{
-		Addr:        *host,
-		User:        *user,
-		Passwd:      *password,
-		Handler:     transceiverHandler,
-		RespTimeout: 10 * time.Second,
-		EnquireLink: 1 * time.Second,
-	}
+	transceiver := getTransceiver()
+	transceiver.Handler = transceiverHandler
 
 	conn := transceiver.Bind() // make persistent connection.
 	defer transceiver.Close()
@@ -147,5 +178,9 @@ func main() {
 	if *numMessages <= 0 {
 		panic("invalid value for number of messages")
 	}
-	sendMessages(*numMessages)
+	if *purge {
+		purgeReceipts()
+	} else {
+		sendMessages(*numMessages)
+	}
 }
