@@ -103,6 +103,7 @@ func sendMessages(numMessages int) {
 	sendErrorCount := NewSafeInt(0)
 	unknownRespCount := NewSafeInt(0)
 	connErrorCount := NewSafeInt(0)
+	submittedCount := NewSafeInt(0)
 
 	transceiverHandler := func(p pdu.Body) {
 		switch p.Header().ID {
@@ -112,7 +113,7 @@ func sendMessages(numMessages int) {
 		case pdu.UnbindID:
 			log.Println("ERROR: They are unbinding me :(")
 		case pdu.SubmitSMRespID:
-			// Fix your stuff fiorix
+			// Fix something florix?
 		default:
 			go log.Println(p.Header().ID.String(), p.Header().Status.Error())
 			go unknownRespCount.Increment()
@@ -161,6 +162,8 @@ func sendMessages(numMessages int) {
 				_, err := transceiver.Submit(req)
 				if err != nil {
 					go sendErrorCount.Increment()
+				} else {
+					submittedCount.Increment()
 				}
 			}()
 		}
@@ -183,6 +186,7 @@ func sendMessages(numMessages int) {
 			log.Println("unknownRespCount:", unknownRespCount.Val())
 			log.Println("sendErrorCount:", sendErrorCount.Val())
 			log.Println("connErrorCount:", connErrorCount.Val())
+			log.Println("Submitted Messages:", submittedCount.Val())
 		}
 	}
 	if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < numMessages {
