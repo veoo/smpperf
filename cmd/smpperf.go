@@ -16,11 +16,6 @@ import (
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
 )
 
-const (
-	dst = "447582668509"
-	src = "447582668506"
-)
-
 var numMessages = flag.Int("n", 5000, "number of messages")
 var msgRate = flag.Int("r", 20, "rate of sending messages in msg/s")
 var wait = flag.Int("w", 60, "seconds to wait for message receipts")
@@ -28,6 +23,11 @@ var user = flag.String("u", "user", "user of SMPP server")
 var password = flag.String("p", "", "password of SMPP server")
 var host = flag.String("h", "127.0.0.1:2775", "host of SMPP server")
 var purge = flag.Bool("purge", false, "waits to receive any pending receipts")
+
+var mode = flag.String("mode", "static", "Mode of destination address (static or dynamic)")
+var dstStart = flag.Int("start", "", "Start msisdn")
+var dst = flag.String("dst", "447582668509", "Destination address (when in static mode)")
+var src = flag.String("src", "447582668506", "Source address")
 
 type SafeInt struct {
 	val int
@@ -98,7 +98,7 @@ func purgeReceipts() {
 	log.Println("receiptCount:", receiptCount.Val())
 }
 
-func sendMessages(numMessages int) {
+func sendMessages(numMessages int, messageText string) {
 	successCount := NewSafeInt(0)
 	sendErrorCount := NewSafeInt(0)
 	unknownRespCount := NewSafeInt(0)
@@ -143,9 +143,9 @@ func sendMessages(numMessages int) {
 	}()
 
 	req := &smpp.ShortMessage{
-		Src:      src,
-		Dst:      dst,
-		Text:     pdutext.Raw("text"),
+		Src:      *src,
+		Dst:      *dst,
+		Text:     pdutext.Raw(messageText),
 		Register: smpp.FinalDeliveryReceipt,
 	}
 	go func() {
@@ -202,12 +202,19 @@ func sendMessages(numMessages int) {
 
 func main() {
 	flag.Parse()
+	messageText := strings.Join(flag.Args(), " ")
+	if len(messageText) > 0 {
+		// all good
+	} else {
+		messageText = "text"
+	}
+
 	if *numMessages <= 0 {
 		panic("invalid value for number of messages")
 	}
 	if *purge {
 		purgeReceipts()
 	} else {
-		sendMessages(*numMessages)
+		sendMessages(*numMessages, messageText)
 	}
 }
