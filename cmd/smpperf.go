@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,8 +27,7 @@ var host = flag.String("h", "127.0.0.1:2775", "host of SMPP server")
 var purge = flag.Bool("purge", false, "waits to receive any pending receipts")
 
 var mode = flag.String("mode", "static", "Mode of destination address (static or dynamic)")
-var dstStart = flag.Int("start", "", "Start msisdn")
-var dst = flag.String("dst", "447582668509", "Destination address (when in static mode)")
+var dst = flag.Int("dst", 447582668509, "Destination address")
 var src = flag.String("src", "447582668506", "Source address")
 
 type SafeInt struct {
@@ -142,17 +143,25 @@ func sendMessages(numMessages int, messageText string) {
 		}
 	}()
 
-	req := &smpp.ShortMessage{
-		Src:      *src,
-		Dst:      *dst,
-		Text:     pdutext.Raw(messageText),
-		Register: smpp.FinalDeliveryReceipt,
-	}
 	go func() {
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
+		var dest int
 		for i := 0; i < numMessages; i += 1 {
+
+			if *mode == "dynamic" {
+				dest = *dst + i
+			} else {
+				dest = *dst
+			}
+
+			req := &smpp.ShortMessage{
+				Src:      *src,
+				Dst:      strconv.Itoa(dest),
+				Text:     pdutext.Raw(messageText),
+				Register: smpp.FinalDeliveryReceipt,
+			}
 			r := rl.Reserve()
 			if r == nil {
 				panic("Something is wrong with rate limiter")
