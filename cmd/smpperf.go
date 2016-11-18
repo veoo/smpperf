@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -16,11 +18,6 @@ import (
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
 )
 
-const (
-	dst = "447582668509"
-	src = "447582668506"
-)
-
 var numMessages = flag.Int("n", 5000, "number of messages")
 var msgRate = flag.Int("r", 20, "rate of sending messages in msg/s")
 var wait = flag.Int("w", 60, "seconds to wait for message receipts")
@@ -28,6 +25,11 @@ var user = flag.String("u", "user", "user of SMPP server")
 var password = flag.String("p", "", "password of SMPP server")
 var host = flag.String("h", "127.0.0.1:2775", "host of SMPP server")
 var purge = flag.Bool("purge", false, "waits to receive any pending receipts")
+
+var mode = flag.String("mode", "static", "Mode of destination address (static or dynamic)")
+var dst = flag.Int("dst", 447582668509, "Destination address")
+var src = flag.String("src", "447582668506", "Source address")
+var verbose = flag.Bool("verbose", false, "Be verbose")
 
 type SafeInt struct {
 	val int
@@ -98,7 +100,7 @@ func purgeReceipts() {
 	log.Println("receiptCount:", receiptCount.Val())
 }
 
-func sendMessages(numMessages int) {
+func sendMessages(numMessages int, messageText string) {
 	successCount := NewSafeInt(0)
 	sendErrorCount := NewSafeInt(0)
 	unknownRespCount := NewSafeInt(0)
@@ -142,17 +144,30 @@ func sendMessages(numMessages int) {
 		}
 	}()
 
-	req := &smpp.ShortMessage{
-		Src:      src,
-		Dst:      dst,
-		Text:     pdutext.Raw("text"),
-		Register: smpp.FinalDeliveryReceipt,
-	}
 	go func() {
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
+		var dest int
 		for i := 0; i < numMessages; i += 1 {
+
+			if *mode == "dynamic" {
+				dest = *dst + i
+			} else {
+				dest = *dst
+			}
+
+			req := &smpp.ShortMessage{
+				Src:      *src,
+				Dst:      strconv.Itoa(dest),
+				Text:     pdutext.Raw(messageText),
+				Register: smpp.FinalDeliveryReceipt,
+			}
+
+			if *verbose == true {
+				log.Println("Sending to ", dest)
+			}
+
 			r := rl.Reserve()
 			if r == nil {
 				panic("Something is wrong with rate limiter")
@@ -202,12 +217,19 @@ func sendMessages(numMessages int) {
 
 func main() {
 	flag.Parse()
+	messageText := strings.Join(flag.Args(), " ")
+	if len(messageText) > 0 {
+		// all good
+	} else {
+		messageText = "text"
+	}
+
 	if *numMessages <= 0 {
 		panic("invalid value for number of messages")
 	}
 	if *purge {
 		purgeReceipts()
 	} else {
-		sendMessages(*numMessages)
+		sendMessages(*numMessages, messageText)
 	}
 }
