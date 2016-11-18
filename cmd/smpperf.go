@@ -29,6 +29,7 @@ var purge = flag.Bool("purge", false, "waits to receive any pending receipts")
 var mode = flag.String("mode", "static", "Mode of destination address (static or dynamic)")
 var dst = flag.Int("dst", 447582668509, "Destination address")
 var src = flag.String("src", "447582668506", "Source address")
+var verbose = flag.String("verbose", "false", "Be verbose")
 
 type SafeInt struct {
 	val int
@@ -163,7 +164,9 @@ func sendMessages(numMessages int, messageText string) {
 				Register: smpp.FinalDeliveryReceipt,
 			}
 
-			log.Println("Sending to ", dest)
+			if *verbose == "true" {
+				log.Println("Sending to ", dest)
+			}
 
 			r := rl.Reserve()
 			if r == nil {
