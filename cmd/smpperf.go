@@ -162,6 +162,9 @@ func sendMessages(numMessages int, messageText string) {
 				Text:     pdutext.Raw(messageText),
 				Register: smpp.FinalDeliveryReceipt,
 			}
+
+			log.Println("Sending to ", dest)
+
 			r := rl.Reserve()
 			if r == nil {
 				panic("Something is wrong with rate limiter")
