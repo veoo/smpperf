@@ -179,6 +179,15 @@ func sendMessages(numMessages int, messageText string) {
 	}()
 
 	go func() {
+		var submitFunc func(*smpp.ShortMessage) (*smpp.ShortMessage, error)
+		numParts := len(messageText)/160 + 1
+		if numParts > 1 {
+			submitFunc = transceiver.SubmitLongMsg
+		} else {
+			submitFunc = transceiver.Submit
+		}
+		numMessages *= numParts
+
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
@@ -202,13 +211,13 @@ func sendMessages(numMessages int, messageText string) {
 				log.Println("Sending to ", dest)
 			}
 
-			r := rl.Reserve()
+			r := rl.ReserveN(time.Now(), numParts)
 			if r == nil {
 				panic("Something is wrong with rate limiter")
 			}
 			time.Sleep(r.Delay())
 			go func() {
-				_, err := transceiver.Submit(req)
+				_, err := submitFunc(req)
 				if err != nil {
 					go sendErrorCount.Increment()
 				} else {
