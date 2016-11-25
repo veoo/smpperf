@@ -177,17 +177,16 @@ func sendMessages(numMessages int, messageText string) {
 			}
 		}
 	}()
+	numParts := len(messageText)/140 + 1
+	expectedReceipts := numMessages * numParts
 
 	go func() {
 		var submitFunc func(*smpp.ShortMessage) (*smpp.ShortMessage, error)
-		numParts := len(messageText)/160 + 1
 		if numParts > 1 {
 			submitFunc = transceiver.SubmitLongMsg
 		} else {
 			submitFunc = transceiver.Submit
 		}
-		numMessages *= numParts
-
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
@@ -234,7 +233,7 @@ func sendMessages(numMessages int, messageText string) {
 
 	for i := 0; i < loops; i += 1 {
 		time.Sleep(loopTime)
-		if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= numMessages {
+		if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= expectedReceipts {
 			break
 		}
 		// Every 10 secs print a progress
@@ -247,7 +246,7 @@ func sendMessages(numMessages int, messageText string) {
 			log.Println("Submitted Messages:", submittedCount.Val())
 		}
 	}
-	if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < numMessages {
+	if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < expectedReceipts {
 		log.Println("WARNING: Waiting time is over and didn't receive enough responses.")
 	}
 
