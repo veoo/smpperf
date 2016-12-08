@@ -218,9 +218,7 @@ func sendMessages(numMessages int, messageText string) {
 func main() {
 	flag.Parse()
 	messageText := strings.Join(flag.Args(), " ")
-	if len(messageText) > 0 {
-		// all good
-	} else {
+	if len(messageText) <= 0 {
 		messageText = "text"
 	}
 
