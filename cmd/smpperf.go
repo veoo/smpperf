@@ -15,6 +15,7 @@ import (
 
 	"github.com/veoo/go-smpp/smpp"
 	"github.com/veoo/go-smpp/smpp/pdu"
+	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
 )
 
@@ -95,23 +96,56 @@ func purgeReceipts() {
 		log.Println("ERROR: Error connecting:", c.Error())
 	}
 	closeTransceiverOnSignal(transceiver)
+	log.Println("Starting purge")
+	loops := *wait
+	for i := 0; i < loops; i += 1 {
+		time.Sleep(1 * time.Second)
+		log.Println("receiptCount:", receiptCount.Val())
+	}
+}
 
-	time.Sleep(time.Duration(*wait) * time.Second)
-	log.Println("receiptCount:", receiptCount.Val())
+func checkReceiptAndCount(p pdu.Body, counts map[pdufield.MessageStateType]*SafeInt) {
+	tlv := p.TLVFields()
+	if tlv == nil {
+		log.Println("ERROR: TLVs are empty")
+		return
+	}
+	s := tlv[pdufield.MessageStateOption]
+	if s == nil || s.Bytes() == nil {
+		log.Println("ERROR: message State is empty")
+		return
+	}
+	state := pdufield.MessageStateType(s.Bytes()[0])
+	if counts[state] == nil {
+		log.Println("ERROR: got unexpected message state:", state)
+		return
+	}
+	go counts[state].Increment()
 }
 
 func sendMessages(numMessages int, messageText string) {
-	successCount := NewSafeInt(0)
+	receiptCount := NewSafeInt(0)
 	sendErrorCount := NewSafeInt(0)
 	unknownRespCount := NewSafeInt(0)
 	connErrorCount := NewSafeInt(0)
 	submittedCount := NewSafeInt(0)
+	receiptCounters := map[pdufield.MessageStateType]*SafeInt{
+		pdufield.Enroute:       NewSafeInt(0),
+		pdufield.Delivered:     NewSafeInt(0),
+		pdufield.Expired:       NewSafeInt(0),
+		pdufield.Deleted:       NewSafeInt(0),
+		pdufield.Undeliverable: NewSafeInt(0),
+		pdufield.Accepted:      NewSafeInt(0),
+		pdufield.Unknown:       NewSafeInt(0),
+		pdufield.Rejected:      NewSafeInt(0),
+	}
 
 	transceiverHandler := func(p pdu.Body) {
 		switch p.Header().ID {
 		case pdu.DeliverSMID:
 			// TODO: check here the resp data is correct
-			go successCount.Increment()
+			go receiptCount.Increment()
+			go checkReceiptAndCount(p, receiptCounters)
 		case pdu.UnbindID:
 			log.Println("ERROR: They are unbinding me :(")
 		case pdu.SubmitSMRespID:
@@ -143,8 +177,16 @@ func sendMessages(numMessages int, messageText string) {
 			}
 		}
 	}()
+	numParts := len(messageText)/140 + 1
+	expectedReceipts := numMessages * numParts
 
 	go func() {
+		var submitFunc func(*smpp.ShortMessage) (*smpp.ShortMessage, error)
+		if numParts > 1 {
+			submitFunc = transceiver.SubmitLongMsg
+		} else {
+			submitFunc = transceiver.Submit
+		}
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(*msgRate), burstLimit)
@@ -168,17 +210,17 @@ func sendMessages(numMessages int, messageText string) {
 				log.Println("Sending to ", dest)
 			}
 
-			r := rl.Reserve()
+			r := rl.ReserveN(time.Now(), numParts)
 			if r == nil {
 				panic("Something is wrong with rate limiter")
 			}
 			time.Sleep(r.Delay())
 			go func() {
-				_, err := transceiver.Submit(req)
+				_, err := submitFunc(req)
 				if err != nil {
 					go sendErrorCount.Increment()
 				} else {
-					submittedCount.Increment()
+					go submittedCount.Increment()
 				}
 			}()
 		}
@@ -191,28 +233,32 @@ func sendMessages(numMessages int, messageText string) {
 
 	for i := 0; i < loops; i += 1 {
 		time.Sleep(loopTime)
-		if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= numMessages {
+		if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= expectedReceipts {
 			break
 		}
 		// Every 10 secs print a progress
 		if i%100 == 0 {
 			log.Println("Time since start:", time.Since(now))
-			log.Println("successCount:", successCount.Val())
+			log.Println("receiptCount:", receiptCount.Val())
 			log.Println("unknownRespCount:", unknownRespCount.Val())
 			log.Println("sendErrorCount:", sendErrorCount.Val())
 			log.Println("connErrorCount:", connErrorCount.Val())
 			log.Println("Submitted Messages:", submittedCount.Val())
 		}
 	}
-	if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < numMessages {
+	if receiptCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < expectedReceipts {
 		log.Println("WARNING: Waiting time is over and didn't receive enough responses.")
 	}
 
 	log.Println("Time elapsed receiving:", time.Since(now))
-	log.Println("successCount:", successCount.Val())
+	log.Println("receiptCount:", receiptCount.Val())
 	log.Println("unknownRespCount:", unknownRespCount.Val())
 	log.Println("sendErrorCount:", sendErrorCount.Val())
 	log.Println("connErrorCount:", connErrorCount.Val())
+	log.Println("receiptCounters:")
+	for k, v := range receiptCounters {
+		log.Printf("\t%s: %v", k.String(), v.Val())
+	}
 }
 
 func main() {
