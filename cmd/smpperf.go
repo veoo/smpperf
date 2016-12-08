@@ -191,9 +191,6 @@ func sendMessages(numMessages int, messageText string) {
 
 	for i := 0; i < loops; i += 1 {
 		time.Sleep(loopTime)
-		if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= numMessages {
-			break
-		}
 		// Every 10 secs print a progress
 		if i%100 == 0 {
 			log.Println("Time since start:", time.Since(now))
