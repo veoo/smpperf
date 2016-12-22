@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -12,11 +13,13 @@ import (
 
 	"github.com/veoo/go-smpp/smpp"
 	"github.com/veoo/go-smpp/smpp/pdu"
+	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
 )
 
 type SMPPerf struct {
 	NumMessages int
+	NumSessions int
 	MessageRate int
 	MessageText string
 	Wait        int
@@ -40,6 +43,18 @@ func closeTransceiverOnSignal(trans *smpp.Transceiver) {
 	}()
 }
 
+func getMessageID(p pdu.Body) string {
+	tlv := p.TLVFields()
+	if tlv == nil {
+		return ""
+	}
+	field := tlv[pdufield.ReceiptedMessageID]
+	if field == nil {
+		return ""
+	}
+	return strings.TrimRight(string(field.Bytes()), "\x00")
+}
+
 func (s *SMPPerf) getTransceiver() *smpp.Transceiver {
 	return &smpp.Transceiver{
 		Addr:        s.Host,
@@ -56,49 +71,63 @@ func (s *SMPPerf) SendMessages() {
 	unknownRespCount := NewSafeInt(0)
 	connErrorCount := NewSafeInt(0)
 	submittedCount := NewSafeInt(0)
+	msgIDToTransceiverID := NewConcurrentMap()
 
-	transceiverHandler := func(p pdu.Body) {
-		switch p.Header().ID {
-		case pdu.DeliverSMID:
-			// TODO: check here the resp data is correct
-			go successCount.Increment()
-		case pdu.UnbindID:
-			log.Println("ERROR: They are unbinding me :(")
-		case pdu.SubmitSMRespID:
-			// Fix something florix?
-		default:
-			go log.Println(p.Header().ID.String(), p.Header().Status.Error())
-			go unknownRespCount.Increment()
-		}
-	}
-
-	transceiver := s.getTransceiver()
-	transceiver.Handler = transceiverHandler
-
-	conn := transceiver.Bind() // make persistent connection.
-	defer transceiver.Close()
-	for c := range conn {
-		if c.Error() == nil {
-			break
-		}
-		log.Println("ERROR: connection failed:", c.Error())
-	}
-	closeTransceiverOnSignal(transceiver)
-
-	go func() {
-		for c := range conn {
-			if c.Error() != nil {
-				log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
-				go connErrorCount.Increment()
+	transceivers := []*smpp.Transceiver{}
+	for i := 0; i < s.NumSessions; i++ {
+		transceiverID := strconv.Itoa(i)
+		transceiverHandler := func(p pdu.Body) {
+			switch p.Header().ID {
+			case pdu.DeliverSMID:
+				// TODO: check here the resp data is correct
+				msgID := getMessageID(p)
+				t, ok := msgIDToTransceiverID.Get(msgID)
+				if !ok {
+					log.Printf("ERROR: message %s not found in transceiver %v", msgID, transceiverID)
+				} else if t != transceiverID {
+					log.Printf("ERROR: message %s was received in wrong transceiver %s", msgID, transceiverID)
+				}
+				go successCount.Increment()
+			case pdu.UnbindID:
+				log.Println("ERROR: They are unbinding me :(")
+			case pdu.SubmitSMRespID:
+				// Fix something florix?
+			default:
+				go log.Println(p.Header().ID.String(), p.Header().Status.Error())
+				go unknownRespCount.Increment()
 			}
 		}
-	}()
+
+		transceiver := s.getTransceiver()
+		transceiver.Handler = transceiverHandler
+
+		conn := transceiver.Bind() // make persistent connection.
+		defer transceiver.Close()
+		for c := range conn {
+			if c.Error() == nil {
+				break
+			}
+			log.Println("ERROR: connection failed:", c.Error())
+		}
+		closeTransceiverOnSignal(transceiver)
+
+		go func() {
+			for c := range conn {
+				if c.Error() != nil {
+					log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
+					go connErrorCount.Increment()
+				}
+			}
+		}()
+		transceivers = append(transceivers, transceiver)
+	}
 
 	go func() {
 		now := time.Now()
 		burstLimit := 100
 		rl := rate.NewLimiter(rate.Limit(s.MessageRate), burstLimit)
 		var dest int
+		currTransceiver := 0
 		for i := 0; i < s.NumMessages; i += 1 {
 
 			if s.Mode == "dynamic" {
@@ -123,14 +152,17 @@ func (s *SMPPerf) SendMessages() {
 				panic("Something is wrong with rate limiter")
 			}
 			time.Sleep(r.Delay())
-			go func() {
-				_, err := transceiver.Submit(req)
+			currTransceiver = (currTransceiver + 1) % s.NumSessions
+			go func(transceiverIndex int) {
+				sm, err := transceivers[transceiverIndex].Submit(req)
 				if err != nil {
 					go sendErrorCount.Increment()
 				} else {
+					transceiverID := strconv.Itoa(transceiverIndex)
+					msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
 					submittedCount.Increment()
 				}
-			}()
+			}(currTransceiver)
 		}
 		log.Println("Time elapsed sending:", time.Since(now))
 	}()
