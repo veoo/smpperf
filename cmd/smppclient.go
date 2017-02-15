@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -17,27 +19,8 @@ import (
 
 func main() {
 
-	toAddr := flag.String("to", "0", "to address")
-	fromAddr := flag.String("from", "447779124374", "from address")
-	user := flag.String("u", "0", "Username to use to connect.")
-	password := flag.String("p", "0", "Password to connect.")
-	address := flag.String("a", "0", "Address to connect to. host:port")
+	// implement toml config reading here
 
-	flag.Parse()
-
-	fmt.Println("to:", *toAddr)
-	fmt.Println("from:", *fromAddr)
-
-	text := strings.Join(flag.Args(), " ")
-
-	fmt.Println("message:", text)
-
-	if *toAddr == "0" {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	deliverChan := make(chan bool)
 	transceiverHandler := func(p pdu.Body) {
 		fmt.Println("RECEIVED SOMETHING", p.Header().ID.String())
 		switch p.Header().ID {
@@ -47,10 +30,12 @@ func main() {
 			dst := f[pdufield.DestinationAddr]
 			txt := f[pdufield.ShortMessage]
 			fmt.Println("TLVs:", p.TLVFields())
-			// fmt.Println(string(p.TLVFields()[pdufield.MessageStateOption].Bytes()))
-			// fmt.Println(string(p.TLVFields()[pdufield.ReceiptedMessageID].Bytes()))
+			fmt.Println(string(p.TLVFields()[pdufield.MessageStateOption].Bytes()))
+			fmt.Println(string(p.TLVFields()[pdufield.ReceiptedMessageID].Bytes()))
 			log.Info(fmt.Sprintf("Client: (DeliverSMID) Short message from=%s to=%s: %s", src, dst, txt))
-			deliverChan <- true
+		case pdu.EnquireLinkID:
+			log.Info("Enquire link received, sending an enquire link resp")
+			// TODO: Implement sending an enquire_link_resp here
 		}
 	}
 
@@ -63,14 +48,11 @@ func main() {
 	}
 
 	connA := transceiver.Bind() // make persistent connection.
-	defer transceiver.Close()
 	go func() {
 		for c := range connA {
 			log.Info("SMPP connection status: ", c.Status(), c.Error())
 		}
 	}()
-
-	log.Info("Running basic tests")
 
 	time.Sleep(2 * time.Second)
 	req := &smpp.ShortMessage{
@@ -85,15 +67,20 @@ func main() {
 	}
 
 	log.Info(sm)
-	timeout := make(chan bool, 1)
+
+	// Add signal interrupt here, currently need to confirm an unbund is sent
+	// on CTRL - C
+	sigs := make(chan os.Signal, 1)
+	done := make(chan bool, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
-		time.Sleep(10 * time.Second)
-		timeout <- true
+		sig := <-sigs
+		log.Info("Received interrupt or sigterm unbinding.")
+		transceiver.Close()
+		done <- true
 	}()
-	select {
-	case <-deliverChan:
-		return
-	case <-timeout:
-		log.Error("timed out waiting for response")
-	}
+
+	<-done
+	log.Info("Exited cleanly, all done!")
 }
