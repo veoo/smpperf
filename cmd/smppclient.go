@@ -1,11 +1,9 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +18,7 @@ import (
 func main() {
 
 	// implement toml config reading here
+	config := ReadConfig()
 
 	transceiverHandler := func(p pdu.Body) {
 		fmt.Println("RECEIVED SOMETHING", p.Header().ID.String())
@@ -40,9 +39,9 @@ func main() {
 	}
 
 	transceiver := &smpp.Transceiver{
-		Addr:        address,
-		User:        user,
-		Passwd:      password,
+		Addr:        config.address,
+		User:        config.user,
+		Passwd:      config.password,
 		Handler:     transceiverHandler,
 		RespTimeout: 10 * time.Second,
 	}
@@ -56,12 +55,12 @@ func main() {
 
 	time.Sleep(2 * time.Second)
 	req := &smpp.ShortMessage{
-		Src:      *fromAddr,
-		Dst:      *toAddr,
-		Text:     pdutext.UCS2(text),
+		Src:      config.src,
+		Dst:      config.dest,
+		Text:     pdutext.Raw(config.text),
 		Register: smpp.FinalDeliveryReceipt,
 	}
-	sm, err := transceiver.SubmitLongMsg(req)
+	sm, err := transceiver.Submit(req)
 	if err != nil {
 		log.Fatal("Error:", err)
 	}
@@ -83,4 +82,21 @@ func main() {
 
 	<-done
 	log.Info("Exited cleanly, all done!")
+}
+
+func ReadConfig(string configfile) Config {
+	usr, _ := user.Current()
+	dir := usr.HomeDir
+	configfile := dir + configfile
+	_, err := os.Stat(configfile)
+	if err != nil {
+		log.Fatal("Config file is missing: ", configfile)
+	}
+
+	var config Config
+	if _, err := toml.DecodeFile(configfile, &config); err != nil {
+		log.Fatal(err)
+	}
+
+	return config
 }
