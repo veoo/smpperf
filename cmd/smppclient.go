@@ -81,7 +81,17 @@ func main() {
 		Text:     text,
 		Register: smpp.FinalDeliveryReceipt,
 	}
-	sm, err := transceiver.Submit(req)
+
+	var sm *smpp.ShortMessage
+	var err error
+	if len(config.Content) < 120 {
+		log.Info("Submitting standard message")
+		sm, err = transceiver.Submit(req)
+	} else {
+		log.Info("Submitting long message")
+		sm, err = transceiver.SubmitLongMsg(req)
+	}
+
 	if err != nil {
 		log.Fatal("Error:", err)
 	}
