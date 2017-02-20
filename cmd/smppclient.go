@@ -9,16 +9,27 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 
+	"github.com/burntsushi/toml"
 	"github.com/veoo/go-smpp/smpp"
 	"github.com/veoo/go-smpp/smpp/pdu"
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
 )
 
+type Config struct {
+	Address  string
+	User     string
+	Password string
+	From     string
+	To       string
+	Content  string
+	Encoding string
+}
+
 func main() {
 
-	// implement toml config reading here
-	config := ReadConfig()
+	argsWithoutProg := os.Args[1:]
+	config := ReadConfig(argsWithoutProg[0])
 
 	transceiverHandler := func(p pdu.Body) {
 		fmt.Println("RECEIVED SOMETHING", p.Header().ID.String())
@@ -39,9 +50,9 @@ func main() {
 	}
 
 	transceiver := &smpp.Transceiver{
-		Addr:        config.address,
-		User:        config.user,
-		Passwd:      config.password,
+		Addr:        config.Address,
+		User:        config.User,
+		Passwd:      config.Password,
 		Handler:     transceiverHandler,
 		RespTimeout: 10 * time.Second,
 	}
@@ -53,11 +64,21 @@ func main() {
 		}
 	}()
 
+	var text pdutext.Codec
+	switch config.Encoding {
+	case "ucs2":
+		text = pdutext.UCS2(config.Content)
+	case "latin1":
+		text = pdutext.Latin1(config.Content)
+	default:
+		text = pdutext.Raw(config.Content)
+	}
+
 	time.Sleep(2 * time.Second)
 	req := &smpp.ShortMessage{
-		Src:      config.src,
-		Dst:      config.dest,
-		Text:     pdutext.Raw(config.text),
+		Src:      config.From,
+		Dst:      config.To,
+		Text:     text,
 		Register: smpp.FinalDeliveryReceipt,
 	}
 	sm, err := transceiver.Submit(req)
@@ -74,7 +95,7 @@ func main() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		sig := <-sigs
+		<-sigs
 		log.Info("Received interrupt or sigterm unbinding.")
 		transceiver.Close()
 		done <- true
@@ -84,17 +105,15 @@ func main() {
 	log.Info("Exited cleanly, all done!")
 }
 
-func ReadConfig(string configfile) Config {
-	usr, _ := user.Current()
-	dir := usr.HomeDir
-	configfile := dir + configfile
-	_, err := os.Stat(configfile)
+func ReadConfig(configfile string) Config {
+	configLocation := "./" + configfile
+	_, err := os.Stat(configLocation)
 	if err != nil {
-		log.Fatal("Config file is missing: ", configfile)
+		log.Fatal("Config file is missing: ", configLocation)
 	}
 
 	var config Config
-	if _, err := toml.DecodeFile(configfile, &config); err != nil {
+	if _, err := toml.DecodeFile(configLocation, &config); err != nil {
 		log.Fatal(err)
 	}
 
