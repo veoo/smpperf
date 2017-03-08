@@ -32,6 +32,11 @@ type SMPPerf struct {
 	Verbose     bool
 }
 
+type transceiverConn struct {
+	transceiver *smpp.Transceiver
+	err         error
+}
+
 func closeTransceiverOnSignal(trans *smpp.Transceiver) {
 	go func() {
 		signalChannel := make(chan os.Signal, 1)
@@ -87,7 +92,7 @@ func (s *SMPPerf) SendMessages() {
 	msgIDToTransceiverID := NewConcurrentStringMap()
 	stateCounters := NewConcurrentIntMap()
 
-	transceivers := []*smpp.Transceiver{}
+	transceivers := []*transceiverConn{}
 	for i := 0; i < s.NumSessions; i++ {
 		transceiverID := strconv.Itoa(i)
 		transceiverHandler := func(p pdu.Body) {
@@ -125,23 +130,33 @@ func (s *SMPPerf) SendMessages() {
 
 		conn := transceiver.Bind() // make persistent connection.
 		defer transceiver.Close()
+		// make sure connection is alright
 		for c := range conn {
 			if c.Error() == nil {
 				break
 			}
 			log.Println("ERROR: connection failed:", c.Error())
 		}
+		// close connection if Interrupted
 		closeTransceiverOnSignal(transceiver)
 
-		go func() {
+		t := &transceiverConn{
+			transceiver: transceiver,
+			err:         nil,
+		}
+
+		// report error on failed conn and Increment error count
+		go func(transceiverIndex int) {
 			for c := range conn {
+				go func() { transceivers[transceiverIndex].err = c.Error() }()
 				if c.Error() != nil {
-					log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
 					go connErrorCount.Increment()
+					log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
 				}
 			}
-		}()
-		transceivers = append(transceivers, transceiver)
+		}(i)
+
+		transceivers = append(transceivers, t)
 	}
 
 	go func() {
@@ -150,7 +165,7 @@ func (s *SMPPerf) SendMessages() {
 		rl := rate.NewLimiter(rate.Limit(s.MessageRate), burstLimit)
 		var dest int
 		currTransceiver := 0
-		for i := 0; i < s.NumMessages; i += 1 {
+		for i := 0; i < s.NumMessages; i++ {
 
 			if s.Mode == "dynamic" {
 				dest = s.Dst + i
@@ -175,8 +190,10 @@ func (s *SMPPerf) SendMessages() {
 			}
 			time.Sleep(r.Delay())
 			currTransceiver = (currTransceiver + 1) % s.NumSessions
+
+			// here we send the message
 			go func(transceiverIndex int) {
-				sm, err := transceivers[transceiverIndex].Submit(req)
+				sm, err := transceivers[transceiverIndex].transceiver.Submit(req)
 				if err != nil {
 					go sendErrorCount.Increment()
 				} else {
@@ -185,6 +202,7 @@ func (s *SMPPerf) SendMessages() {
 					submittedCount.Increment()
 				}
 			}(currTransceiver)
+
 		}
 		log.Println("Time elapsed sending:", time.Since(now))
 	}()
