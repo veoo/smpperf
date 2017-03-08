@@ -151,7 +151,7 @@ func (s *SMPPerf) SendMessages() {
 				go func() { transceivers[transceiverIndex].err = c.Error() }()
 				if c.Error() != nil {
 					go connErrorCount.Increment()
-					log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
+					log.Printf("ERROR: transciever %v SMPP connection status: %v %v", transceiverIndex, c.Status(), c.Error())
 				}
 			}
 		}(i)
@@ -165,7 +165,8 @@ func (s *SMPPerf) SendMessages() {
 		rl := rate.NewLimiter(rate.Limit(s.MessageRate), burstLimit)
 		var dest int
 		currTransceiver := 0
-		for i := 0; i < s.NumMessages; i++ {
+		i := 0
+		for i < s.NumMessages {
 
 			if s.Mode == "dynamic" {
 				dest = s.Dst + i
@@ -190,21 +191,31 @@ func (s *SMPPerf) SendMessages() {
 			}
 			time.Sleep(r.Delay())
 			currTransceiver = (currTransceiver + 1) % s.NumSessions
-
-			// here we send the message
-			go func(transceiverIndex int) {
-				sm, err := transceivers[transceiverIndex].transceiver.Submit(req)
-				if err != nil {
-					go sendErrorCount.Increment()
-				} else {
-					transceiverID := strconv.Itoa(transceiverIndex)
-					msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
-					submittedCount.Increment()
-				}
-			}(currTransceiver)
-
+			if transceivers[currTransceiver].err == nil {
+				// here we send the message
+				go func(transceiverIndex int) {
+					sm, err := transceivers[transceiverIndex].transceiver.Submit(req)
+					if err != nil {
+						if err == smpp.ErrNotConnected {
+							i--
+							go connErrorCount.Increment()
+						} else {
+							go sendErrorCount.Increment()
+						}
+					} else {
+						transceiverID := strconv.Itoa(transceiverIndex)
+						msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
+						submittedCount.Increment()
+					}
+				}(currTransceiver)
+				i++
+			} else {
+				i--
+				go connErrorCount.Increment()
+			}
 		}
 		log.Println("Time elapsed sending:", time.Since(now))
+
 	}()
 
 	now := time.Now()
