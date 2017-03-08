@@ -65,13 +65,27 @@ func (s *SMPPerf) getTransceiver() *smpp.Transceiver {
 	}
 }
 
+func (s *SMPPerf) countState(counterMap *ConcurrentIntMap, state pdufield.MessageStateType) {
+	if _, ok := counterMap.Get(state); !ok {
+		counterMap.Create(state)
+	}
+	go counterMap.Increment(state)
+	return
+}
+
+func (s *SMPPerf) isFinalState(state pdufield.MessageStateType) bool {
+	// Expired, Delivered, Undeliverable, Rejected, unsure about Deleted
+	return state == pdufield.Expired || state == pdufield.Delivered || state == pdufield.Undeliverable || state == pdufield.Rejected || state == pdufield.Deleted
+}
+
 func (s *SMPPerf) SendMessages() {
 	successCount := NewSafeInt(0)
 	sendErrorCount := NewSafeInt(0)
 	unknownRespCount := NewSafeInt(0)
 	connErrorCount := NewSafeInt(0)
 	submittedCount := NewSafeInt(0)
-	msgIDToTransceiverID := NewConcurrentMap()
+	msgIDToTransceiverID := NewConcurrentStringMap()
+	stateCounters := NewConcurrentIntMap()
 
 	transceivers := []*smpp.Transceiver{}
 	for i := 0; i < s.NumSessions; i++ {
@@ -81,13 +95,21 @@ func (s *SMPPerf) SendMessages() {
 			case pdu.DeliverSMID:
 				// TODO: check here the resp data is correct
 				msgID := getMessageID(p)
+
 				t, ok := msgIDToTransceiverID.Get(msgID)
 				if !ok {
 					log.Printf("ERROR: message %s not found in transceiver %v", msgID, transceiverID)
 				} else if t != transceiverID {
 					log.Printf("ERROR: message %s was received in wrong transceiver %s", msgID, transceiverID)
 				}
-				go successCount.Increment()
+
+				state := pdufield.MessageStateType(p.TLVFields()[pdufield.MessageStateOption].Bytes()[0])
+				s.countState(stateCounters, state)
+
+				if s.isFinalState(state) {
+					go successCount.Increment()
+				}
+
 			case pdu.UnbindID:
 				log.Println("ERROR: They are unbinding me :(")
 			case pdu.SubmitSMRespID:
@@ -184,6 +206,10 @@ func (s *SMPPerf) SendMessages() {
 			log.Println("sendErrorCount:", sendErrorCount.Val())
 			log.Println("connErrorCount:", connErrorCount.Val())
 			log.Println("Submitted Messages:", submittedCount.Val())
+			for k, v := range stateCounters.GetAll() {
+				log.Println(k, v)
+			}
+
 		}
 	}
 	if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < s.NumMessages {
@@ -195,6 +221,10 @@ func (s *SMPPerf) SendMessages() {
 	log.Println("unknownRespCount:", unknownRespCount.Val())
 	log.Println("sendErrorCount:", sendErrorCount.Val())
 	log.Println("connErrorCount:", connErrorCount.Val())
+	for k, v := range stateCounters.GetAll() {
+		log.Println(k, v)
+	}
+
 }
 
 func (s *SMPPerf) Purge() {
