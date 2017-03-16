@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,18 +19,75 @@ import (
 )
 
 type SMPPerf struct {
-	NumMessages int
-	NumSessions int
-	MessageRate int
-	MessageText string
-	Wait        int
-	User        string
-	Password    string
-	Host        string
-	Mode        string
-	Dst         int
-	Src         string
-	Verbose     bool
+	NumMessages          int
+	NumSessions          int
+	MessageRate          int
+	MessageText          string
+	Wait                 int
+	User                 string
+	Password             string
+	Host                 string
+	Mode                 string
+	Dst                  int
+	Src                  string
+	Verbose              bool
+	transceivers         []*transceiverConn
+	counters             *counters
+	msgIDToTransceiverID *ConcurrentStringMap
+}
+
+type transceiverConn struct {
+	transceiver *smpp.Transceiver
+	err         error
+	m           *sync.RWMutex
+}
+
+func (s *SMPPerf) setTransceiverErr(transceiverIndex int, err error) {
+	s.transceivers[transceiverIndex].m.Lock()
+	defer s.transceivers[transceiverIndex].m.Unlock()
+	s.transceivers[transceiverIndex].err = err
+	log.Println(err)
+}
+
+func (s *SMPPerf) checkTransceiverErr(transceiverIndex int) bool {
+	s.transceivers[transceiverIndex].m.Lock()
+	defer s.transceivers[transceiverIndex].m.Unlock()
+	return s.transceivers[transceiverIndex].err != nil
+
+}
+
+func (s *SMPPerf) submitMessage(transceiverIndex int, req *smpp.ShortMessage) {
+	sm, err := s.transceivers[transceiverIndex].transceiver.Submit(req)
+	if err != nil {
+		if err == smpp.ErrNotConnected {
+			go s.counters.connErrorCount.Increment()
+		} else {
+			go s.counters.sendErrorCount.Increment()
+		}
+	} else {
+		transceiverID := strconv.Itoa(transceiverIndex)
+		s.msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
+	}
+}
+
+type counters struct {
+	successCount     *SafeInt
+	sendErrorCount   *SafeInt
+	unknownRespCount *SafeInt
+	connErrorCount   *SafeInt
+	submittedCount   *SafeInt
+	stateCounters    *ConcurrentIntMap
+}
+
+func newCounters() *counters {
+	return &counters{
+		successCount:     NewSafeInt(0),
+		sendErrorCount:   NewSafeInt(0),
+		unknownRespCount: NewSafeInt(0),
+		connErrorCount:   NewSafeInt(0),
+		submittedCount:   NewSafeInt(0),
+		stateCounters:    NewConcurrentIntMap(),
+	}
 }
 
 func closeTransceiverOnSignal(trans *smpp.Transceiver) {
@@ -79,15 +137,10 @@ func (s *SMPPerf) isFinalState(state pdufield.MessageStateType) bool {
 }
 
 func (s *SMPPerf) SendMessages() {
-	successCount := NewSafeInt(0)
-	sendErrorCount := NewSafeInt(0)
-	unknownRespCount := NewSafeInt(0)
-	connErrorCount := NewSafeInt(0)
-	submittedCount := NewSafeInt(0)
-	msgIDToTransceiverID := NewConcurrentStringMap()
-	stateCounters := NewConcurrentIntMap()
+	s.counters = newCounters()
+	s.transceivers = make([]*transceiverConn, s.NumSessions)
+	s.msgIDToTransceiverID = NewConcurrentStringMap()
 
-	transceivers := []*smpp.Transceiver{}
 	for i := 0; i < s.NumSessions; i++ {
 		transceiverID := strconv.Itoa(i)
 		transceiverHandler := func(p pdu.Body) {
@@ -96,7 +149,7 @@ func (s *SMPPerf) SendMessages() {
 				// TODO: check here the resp data is correct
 				msgID := getMessageID(p)
 
-				t, ok := msgIDToTransceiverID.Get(msgID)
+				t, ok := s.msgIDToTransceiverID.Get(msgID)
 				if !ok {
 					log.Printf("ERROR: message %s not found in transceiver %v", msgID, transceiverID)
 				} else if t != transceiverID {
@@ -104,10 +157,10 @@ func (s *SMPPerf) SendMessages() {
 				}
 
 				state := pdufield.MessageStateType(p.TLVFields()[pdufield.MessageStateOption].Bytes()[0])
-				s.countState(stateCounters, state)
+				s.countState(s.counters.stateCounters, state)
 
 				if s.isFinalState(state) {
-					go successCount.Increment()
+					go s.counters.successCount.Increment()
 				}
 
 			case pdu.UnbindID:
@@ -116,7 +169,7 @@ func (s *SMPPerf) SendMessages() {
 				// Fix something florix?
 			default:
 				go log.Println(p.Header().ID.String(), p.Header().Status.Error())
-				go unknownRespCount.Increment()
+				go s.counters.unknownRespCount.Increment()
 			}
 		}
 
@@ -125,23 +178,34 @@ func (s *SMPPerf) SendMessages() {
 
 		conn := transceiver.Bind() // make persistent connection.
 		defer transceiver.Close()
+		// make sure connection is alright
 		for c := range conn {
 			if c.Error() == nil {
 				break
 			}
 			log.Println("ERROR: connection failed:", c.Error())
 		}
+		// close connection if Interrupted
 		closeTransceiverOnSignal(transceiver)
 
-		go func() {
+		t := &transceiverConn{
+			transceiver: transceiver,
+			err:         nil,
+			m:           &sync.RWMutex{},
+		}
+
+		// report error on failed conn and Increment error count
+		go func(transceiverIndex int) {
 			for c := range conn {
+				s.setTransceiverErr(transceiverIndex, c.Error())
 				if c.Error() != nil {
-					log.Println("ERROR: SMPP connection status: ", c.Status(), c.Error())
-					go connErrorCount.Increment()
+					go s.counters.connErrorCount.Increment()
+					log.Printf("ERROR: transciever %v SMPP connection status: %v %v", transceiverIndex, c.Status(), c.Error())
 				}
 			}
-		}()
-		transceivers = append(transceivers, transceiver)
+		}(i)
+
+		s.transceivers[i] = t
 	}
 
 	go func() {
@@ -150,7 +214,8 @@ func (s *SMPPerf) SendMessages() {
 		rl := rate.NewLimiter(rate.Limit(s.MessageRate), burstLimit)
 		var dest int
 		currTransceiver := 0
-		for i := 0; i < s.NumMessages; i += 1 {
+		i := 0
+		for i < s.NumMessages {
 
 			if s.Mode == "dynamic" {
 				dest = s.Dst + i
@@ -175,16 +240,14 @@ func (s *SMPPerf) SendMessages() {
 			}
 			time.Sleep(r.Delay())
 			currTransceiver = (currTransceiver + 1) % s.NumSessions
-			go func(transceiverIndex int) {
-				sm, err := transceivers[transceiverIndex].Submit(req)
-				if err != nil {
-					go sendErrorCount.Increment()
-				} else {
-					transceiverID := strconv.Itoa(transceiverIndex)
-					msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
-					submittedCount.Increment()
-				}
-			}(currTransceiver)
+			if !s.checkTransceiverErr(currTransceiver) {
+				go s.submitMessage(currTransceiver, req)
+				s.counters.submittedCount.Increment()
+				i++
+			} else {
+				i--
+				go s.counters.connErrorCount.Increment()
+			}
 		}
 		log.Println("Time elapsed sending:", time.Since(now))
 	}()
@@ -195,36 +258,31 @@ func (s *SMPPerf) SendMessages() {
 
 	for i := 0; i < loops; i += 1 {
 		time.Sleep(loopTime)
-		if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() >= s.NumMessages {
+		if s.counters.successCount.Val()+s.counters.unknownRespCount.Val()+s.counters.sendErrorCount.Val() >= s.NumMessages {
 			break
 		}
 		// Every 10 secs print a progress
 		if i%100 == 0 {
-			log.Println("Time since start:", time.Since(now))
-			log.Println("successCount:", successCount.Val())
-			log.Println("unknownRespCount:", unknownRespCount.Val())
-			log.Println("sendErrorCount:", sendErrorCount.Val())
-			log.Println("connErrorCount:", connErrorCount.Val())
-			log.Println("Submitted Messages:", submittedCount.Val())
-			for k, v := range stateCounters.GetAll() {
-				log.Println(k, v)
-			}
-
+			s.printStats(now)
 		}
 	}
-	if successCount.Val()+unknownRespCount.Val()+sendErrorCount.Val() < s.NumMessages {
+	if s.counters.successCount.Val()+s.counters.unknownRespCount.Val()+s.counters.sendErrorCount.Val() < s.NumMessages {
 		log.Println("WARNING: Waiting time is over and didn't receive enough responses.")
 	}
+	s.printStats(now)
 
-	log.Println("Time elapsed receiving:", time.Since(now))
-	log.Println("successCount:", successCount.Val())
-	log.Println("unknownRespCount:", unknownRespCount.Val())
-	log.Println("sendErrorCount:", sendErrorCount.Val())
-	log.Println("connErrorCount:", connErrorCount.Val())
-	for k, v := range stateCounters.GetAll() {
+}
+
+func (s *SMPPerf) printStats(now time.Time) {
+	log.Println("Time since start:", time.Since(now))
+	log.Println("successCount:", s.counters.successCount.Val())
+	log.Println("unknownRespCount:", s.counters.unknownRespCount.Val())
+	log.Println("sendErrorCount:", s.counters.sendErrorCount.Val())
+	log.Println("connErrorCount:", s.counters.connErrorCount.Val())
+	log.Println("Submitted Messages:", s.counters.submittedCount.Val())
+	for k, v := range s.counters.stateCounters.GetAll() {
 		log.Println(k, v)
 	}
-
 }
 
 func (s *SMPPerf) Purge() {
