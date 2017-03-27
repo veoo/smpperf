@@ -1,0 +1,9 @@
+address = "serveraddress.com:9090"
+user = "user"
+password = "password"
+from = "447779375374"
+to = "4746862102"
+content = "hello there"
+
+# Encoding can be raw, ucs2 or latin1
+encoding = "raw"
