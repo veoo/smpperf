@@ -16,7 +16,35 @@ import (
 	"github.com/veoo/go-smpp/smpp/pdu"
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
+	"github.com/veoo/go-smpp/smpp/pdu/pdutlv"
 )
+
+type Semaphore struct {
+	tokens chan struct{}
+}
+
+func NewSemaphore(n int) *Semaphore {
+	if n <= 0 {
+		n = 5
+	}
+	return &Semaphore{
+		tokens: make(chan struct{}, n),
+	}
+}
+
+func (s *Semaphore) Increase() {
+	s.tokens <- struct{}{}
+}
+
+func (s *Semaphore) Decrease() {
+	<-s.tokens
+}
+
+func (s *Semaphore) IncreaseN(n int) {
+	for i := 0; i < n; i++ {
+		s.tokens <- struct{}{}
+	}
+}
 
 type SMPPerf struct {
 	NumMessages          int
@@ -106,7 +134,7 @@ func getMessageID(p pdu.Body) string {
 	if tlv == nil {
 		return ""
 	}
-	field := tlv[pdufield.ReceiptedMessageID]
+	field := tlv[pdutlv.ReceiptedMessageID]
 	if field == nil {
 		return ""
 	}
@@ -123,7 +151,7 @@ func (s *SMPPerf) getTransceiver() *smpp.Transceiver {
 	}
 }
 
-func (s *SMPPerf) countState(counterMap *ConcurrentIntMap, state pdufield.MessageStateType) {
+func (s *SMPPerf) countState(counterMap *ConcurrentIntMap, state pdutlv.MessageStateType) {
 	if _, ok := counterMap.Get(state); !ok {
 		counterMap.Create(state)
 	}
@@ -131,9 +159,9 @@ func (s *SMPPerf) countState(counterMap *ConcurrentIntMap, state pdufield.Messag
 	return
 }
 
-func (s *SMPPerf) isFinalState(state pdufield.MessageStateType) bool {
+func (s *SMPPerf) isFinalState(state pdutlv.MessageStateType) bool {
 	// Expired, Delivered, Undeliverable, Rejected, unsure about Deleted
-	return state == pdufield.Expired || state == pdufield.Delivered || state == pdufield.Undeliverable || state == pdufield.Rejected || state == pdufield.Deleted
+	return state == pdutlv.Expired || state == pdutlv.Delivered || state == pdutlv.Undeliverable || state == pdutlv.Rejected || state == pdutlv.Deleted
 }
 
 func (s *SMPPerf) SendMessages() {
@@ -227,7 +255,7 @@ func (s *SMPPerf) SendMessages() {
 				Src:      s.Src,
 				Dst:      strconv.Itoa(dest),
 				Text:     pdutext.Raw(s.MessageText),
-				Register: smpp.FinalDeliveryReceipt,
+				Register: pdufield.FinalDeliveryReceipt,
 			}
 
 			if s.Verbose == true {
