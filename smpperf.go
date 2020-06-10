@@ -156,7 +156,7 @@ func (s *SMPPerf) SendMessages() {
 					log.Printf("ERROR: message %s was received in wrong transceiver %s", msgID, transceiverID)
 				}
 
-				state := pdufield.MessageStateType(p.TLVFields()[pdufield.MessageStateOption].Bytes()[0])
+				state := pdutlv.MessageStateType(p.TLVFields()[pdutlv.MessageStateOption].Bytes()[0])
 				s.countState(s.counters.stateCounters, state)
 
 				if s.isFinalState(state) {
