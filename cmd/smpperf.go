@@ -9,7 +9,6 @@ import (
 
 var numMessages = flag.Int("n", 5000, "number of messages")
 var numSessions = flag.Int("s", 1, "number of sessions, messages will be distributed")
-var windowSize = flag.Int("ws", 1, "number of concurrent messages to be sent")
 var msgRate = flag.Int("r", 20, "rate of sending messages in msg/s")
 var wait = flag.Int("w", 60, "seconds to wait for message receipts")
 var user = flag.String("u", "user", "user of SMPP server")
@@ -36,7 +35,6 @@ func main() {
 		NumMessages: *numMessages,
 		NumSessions: *numSessions,
 		MessageRate: *msgRate,
-		WindowSize:  *windowSize,
 		MessageText: messageText,
 		Wait:        *wait,
 		User:        *user,
