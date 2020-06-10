@@ -85,6 +85,10 @@ func (s *SMPPerf) checkTransceiverErr(transceiverIndex int) bool {
 }
 
 func (s *SMPPerf) submitMessage(transceiverIndex int, req *smpp.ShortMessage) {
+	if len(req.Text.Encode()) > 140 {
+		s.submitLongMessage(transceiverIndex, req)
+		return
+	}
 	sm, err := s.transceivers[transceiverIndex].transceiver.Submit(req)
 	if err != nil {
 		if err == smpp.ErrNotConnected {
@@ -95,6 +99,22 @@ func (s *SMPPerf) submitMessage(transceiverIndex int, req *smpp.ShortMessage) {
 	} else {
 		transceiverID := strconv.Itoa(transceiverIndex)
 		s.msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
+	}
+}
+
+func (s *SMPPerf) submitLongMessage(transceiverIndex int, req *smpp.ShortMessage) {
+	sms, err := s.transceivers[transceiverIndex].transceiver.SubmitLongMsg(req)
+	if err != nil {
+		if err == smpp.ErrNotConnected {
+			go s.counters.connErrorCount.Increment()
+		} else {
+			go s.counters.sendErrorCount.Increment()
+		}
+	} else {
+		for _, sm := range sms {
+			transceiverID := strconv.Itoa(transceiverIndex)
+			s.msgIDToTransceiverID.Set(sm.RespID(), transceiverID)
+		}
 	}
 }
 
